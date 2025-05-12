@@ -1,0 +1,12 @@
+Smart Waste Monitoring System
+GROUP MEMBERS:
+Almendras, Kaela Adrienne
+Castro, Jhamie
+Rongasan, Mark Daniel
+
+Our project, the Smart Waste Bin Monitoring System, is designed to make waste management easier and
+more efficient. It uses sensors to monitor how full a trash bin is and how much the trash weighs. When the
+bin reaches a certain weight or is nearly full, the system alerts users with a buzzer. By combining a load cell,
+an ultrasonic sensor, and a simple alert mechanism, our goal is to help users know exactly when it’s time to
+empty the bin, reducing overflow and improving cleanliness.
+
