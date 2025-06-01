@@ -1,168 +1,183 @@
-// Blynk project and authentication setup 
-#define BLYNK_TEMPLATE_ID "TMPL6meIntBrB" 
-#define BLYNK_TEMPLATE_NAME "SmartTrashbin" 
-#define BLYNK_AUTH_TOKEN "QtMQBW6DBr0j--J86PX206Mr0W4Itvs_" 
+#define BLYNK_TEMPLATE_ID "TMPL6meIntBrB"
+#define BLYNK_TEMPLATE_NAME "SmartTrashbin"
+#define BLYNK_AUTH_TOKEN "QtMQBW6DBr0j--J86PX206Mr0W4Itvs_"
 
-#include <ESP8266WiFi.h> 
-#include <BlynkSimpleEsp8266.h> 
-#include <Wire.h> 
-#include <math.h> 
-#include <HX711.h> 
-#include <hd44780.h> 
-#include <hd44780ioClass/hd44780_I2Cexp.h> 
+#include <ESP8266WiFi.h>
+#include <BlynkSimpleEsp8266.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <HX711.h>
+#include <math.h>
 
-// WiFi credentials  
-char ssid[] = ""; 
-char pass[] = ""; 
+// OLED settings
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-// HX711 load cell pins and object initialization 
-#define HX711_DOUT D6 
-#define HX711_SCK D5 
-HX711 LoadCell; 
+// WiFi credentials
+char ssid[] = "";
+char pass[] = "";
 
-// Ultrasonic sensor pins 
-#define TRIG_PIN D4 
+// HX711 load cell pins and object
+#define HX711_DOUT D6
+#define HX711_SCK D5
+HX711 LoadCell;
+
+// Ultrasonic sensor pins
+#define TRIG_PIN D4
 #define ECHO_PIN D7
 
-// Buzzer pin and buzzer state variable 
-#define BUZZER_PIN D8 
-bool buzzerOn = false; 
+// Buzzer pin
+#define BUZZER_PIN D8
+bool buzzerOn = false;
 
-// LCD object for 16x2 display via I2C expander 
-hd44780_I2Cexp lcd; 
+// Bin height thresholds
+const float binMaxHeight = 17.0;
+const float binMinHeight = 5.0;
 
-// Bin height thresholds (in cm) 
-const float binMaxHeight = 30.0; 
-const float binMinHeight = 10.0; 
+// Low-pass filter variables
+const float T = 1.0;
+const float tau = 0.5;
+float filteredWeight = 0.0;
+bool firstWeightSample = true;
 
-// --- Low-pass filter variables for load cell ---
-const float T = 1.0;       // sample period in seconds (loop delay 1000ms)
-const float tau = 0.5;     // filter time constant in seconds (adjust for smoothing)
-float filteredWeight = 0.0; 
-bool firstWeightSample = true; 
+// Notification cooldown (in milliseconds)
+unsigned long lastWeightAlertTime = 0;
+unsigned long lastFullAlertTime = 0;
+const unsigned long alertCooldown = 60000; // 60 seconds
 
-// Function to read sensors and update display, Blynk, and buzzer 
-void readSensorsAndUpdate() { 
-  bool alertTriggered = false; 
+void readSensorsAndUpdate() {
+  bool alertTriggered = false;
 
-  // Read weight from load cell if ready 
-  if (LoadCell.is_ready()) { 
-    float rawWeight = LoadCell.get_units(); 
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
 
-    // --- LOW-PASS FILTER IMPLEMENTATION ---
+  // --- Read and filter weight ---
+  if (LoadCell.is_ready()) {
+    float rawWeight = LoadCell.get_units();
+
     if (firstWeightSample) {
-      filteredWeight = rawWeight;  // initialize filtered value on first sample
+      filteredWeight = rawWeight;
       firstWeightSample = false;
     } else {
       float alpha = T / (tau + T);
       filteredWeight = filteredWeight + alpha * (rawWeight - filteredWeight);
     }
-    float averageWeight = filteredWeight;
-    // --- END LOW-PASS FILTER ---
 
-    // Filter out very small weight values (noise) 
-    if (abs(averageWeight) < 5.0) averageWeight = 0.0; 
+    float averageWeight = abs(filteredWeight) < 5.0 ? 0.0 : filteredWeight;
 
-    // Print average weight to serial and display on LCD 
-    Serial.print("Weight (filtered): "); 
-    Serial.print(averageWeight, 2); 
-    Serial.println(" g"); 
-    lcd.setCursor(0, 0); 
-    lcd.print("Wt:"); 
-    lcd.print(averageWeight, 1); 
-    lcd.print("g "); 
+    Serial.print("Weight (filtered): ");
+    Serial.print(averageWeight, 2);
+    Serial.println(" g");
 
-    // Send weight value to Blynk app virtual pin V1 
-    Blynk.virtualWrite(V1, averageWeight); 
+    display.setCursor(0, 0);
+    display.print("Weight: ");
+    display.print(averageWeight, 1);
+    display.print("g");
 
-    // Trigger alert if weight exceeds threshold 
-    if (averageWeight >= 100.0) {
-      alertTriggered = true; 
-    } 
-  } 
+    Blynk.virtualWrite(V1, averageWeight);
 
-  // Ultrasonic sensor trigger pulse 
-  digitalWrite(TRIG_PIN, LOW); 
-  delayMicroseconds(2); 
-  digitalWrite(TRIG_PIN, HIGH); 
-  delayMicroseconds(10); 
-  digitalWrite(TRIG_PIN, LOW); 
+    if (averageWeight >= 750.0) {
+      alertTriggered = true;
+      if (millis() - lastWeightAlertTime > alertCooldown) {
+        Blynk.logEvent("weight_alert", "Trash bin is getting heavy!");
+        lastWeightAlertTime = millis();
+      }
+    }
+  }
 
-  // Measure echo pulse duration and calculate distance in cm 
-  long duration = pulseIn(ECHO_PIN, HIGH); 
-  float distanceCm = duration * 0.0343 / 2.0; 
+  // --- Read ultrasonic distance ---
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
 
-  // Print distance to serial and display on LCD 
-  Serial.print("Distance: "); 
-  Serial.print(distanceCm); 
-  Serial.println(" cm"); 
-  lcd.setCursor(0, 1); 
-  lcd.print("Dst:"); 
-  lcd.print(distanceCm, 1); 
-  lcd.print("cm "); 
+  long duration = pulseIn(ECHO_PIN, HIGH);
+  float distanceCm = duration * 0.0343 / 2.0;
 
-  // Send distance value to Blynk app virtual pin V0 
-  Blynk.virtualWrite(V0, distanceCm); 
+  Serial.print("Distance: ");
+  Serial.print(distanceCm);
+  Serial.println(" cm");
 
-  // Calculate bin fill level percentage based on distance
-  float binLevel = 0; 
-  if (distanceCm <= binMinHeight) { 
-    binLevel = 100; 
-  } else if (distanceCm >= binMaxHeight) { 
-    binLevel = 0; 
-  } else { 
-    binLevel = ((binMaxHeight - distanceCm) / (binMaxHeight - binMinHeight)) * 100.0; 
-  } 
+  display.setCursor(0, 16);
+  display.print("Distance: ");
+  display.print(distanceCm, 1);
+  display.print("cm");
 
-  // Print bin level and send to Blynk virtual pin V2 
-  Serial.print("Bin Level: "); 
-  Serial.print(binLevel); 
-  Serial.println(" %"); 
-  Blynk.virtualWrite(V2, binLevel); 
+  Blynk.virtualWrite(V0, distanceCm);
 
-  // Trigger alert if bin is nearly full (distance <= 5 cm) 
-  if (distanceCm <= 10.0) { 
-    alertTriggered = true; 
-  } 
+  // --- Bin level calculation ---
+  float binLevel = 0;
+  if (distanceCm <= binMinHeight) {
+    binLevel = 100;
+  } else if (distanceCm >= binMaxHeight) {
+    binLevel = 0;
+  } else {
+    binLevel = ((binMaxHeight - distanceCm) / (binMaxHeight - binMinHeight)) * 100.0;
+  }
 
-  // Control buzzer based on alert state 
-  if (alertTriggered && !buzzerOn) { 
-    tone(BUZZER_PIN, 1000); // Turn buzzer on at 1000 Hz 
-    buzzerOn = true; 
-  } else if (!alertTriggered && buzzerOn) { 
-    noTone(BUZZER_PIN); // Turn buzzer off 
-    buzzerOn = false; 
-  } 
-} 
+  Serial.print("Bin Level: ");
+  Serial.print(binLevel);
+  Serial.println(" %");
 
-// Arduino setup function 
-void setup() { 
-  Serial.begin(9600); 
-  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass); 
+  display.setCursor(0, 32);
+  display.print("Fill Level: ");
+  display.print(binLevel, 1);
+  display.print("%");
 
-  int status = lcd.begin(16, 2); 
-  if (status) { 
-    Serial.print("LCD init failed with status: "); 
-    Serial.println(status); 
-  } else { 
-    lcd.backlight(); 
-    lcd.print("Initializing..."); 
-  } 
+  Blynk.virtualWrite(V2, binLevel);
 
-  // Initialize load cell 
-  LoadCell.begin(HX711_DOUT, HX711_SCK); 
-  LoadCell.set_scale(696.0); 
-  LoadCell.tare(); 
+  if (distanceCm <= 5.0) {
+    alertTriggered = true;
+    if (millis() - lastFullAlertTime > alertCooldown) {
+      Blynk.logEvent("alert", "Trash bin is full!");
+      lastFullAlertTime = millis();
+    }
+  }
 
-  // Set ultrasonic sensor and buzzer pin modes 
-  pinMode(TRIG_PIN, OUTPUT); 
-  pinMode(ECHO_PIN, INPUT); 
-  pinMode(BUZZER_PIN, OUTPUT); 
-} 
+  // --- Buzzer control ---
+  if (alertTriggered && !buzzerOn) {
+    tone(BUZZER_PIN, 1000);
+    buzzerOn = true;
+  } else if (!alertTriggered && buzzerOn) {
+    noTone(BUZZER_PIN);
+    buzzerOn = false;
+  }
 
-// Main loop 
+  display.display();
+}
+
+void setup() {
+  Serial.begin(9600);
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED init failed");
+    while (true);
+  }
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print("Initializing...");
+  display.display();
+
+  LoadCell.begin(HX711_DOUT, HX711_SCK);
+  LoadCell.set_scale(-424.5575);
+  LoadCell.tare();
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+}
+
 void loop() {
-  Blynk.run(); 
-  readSensorsAndUpdate(); 
-  delay(1000); 
+  Blynk.run();
+  readSensorsAndUpdate();
+  delay(2000);
 }
