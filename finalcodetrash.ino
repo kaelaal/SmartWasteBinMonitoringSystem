@@ -37,7 +37,7 @@ bool buzzerOn = false;
 const float binMaxHeight = 17.0;
 const float binMinHeight = 5.0;
 
-// Low-pass filter variables
+// Low-pass filter variables for weight
 const float T = 1.0;
 const float tau = 0.5;
 float filteredWeight = 0.0;
@@ -46,7 +46,35 @@ bool firstWeightSample = true;
 // Notification cooldown (in milliseconds)
 unsigned long lastWeightAlertTime = 0;
 unsigned long lastFullAlertTime = 0;
-const unsigned long alertCooldown = 60000; // 60 seconds
+const unsigned long alertCooldown = 5000; // 5 seconds for testing
+
+// Moving average for ultrasonic
+float getStableDistanceCm(int samples = 5) {
+  float total = 0;
+  int validSamples = 0;
+
+  for (int i = 0; i < samples; i++) {
+    digitalWrite(TRIG_PIN, LOW);
+    delayMicroseconds(2);
+    digitalWrite(TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(TRIG_PIN, LOW);
+
+    long duration = pulseIn(ECHO_PIN, HIGH, 30000); // timeout in µs
+    float distance = duration * 0.0343 / 2.0;
+
+    // Only include valid distances
+    if (distance > 2 && distance < 400) {
+      total += distance;
+      validSamples++;
+    }
+
+    delay(50); // short delay to avoid echo interference
+  }
+
+  if (validSamples == 0) return 0;
+  return total / validSamples;
+}
 
 void readSensorsAndUpdate() {
   bool alertTriggered = false;
@@ -81,23 +109,18 @@ void readSensorsAndUpdate() {
     Blynk.virtualWrite(V1, averageWeight);
 
     if (averageWeight >= 750.0) {
+      Serial.println("Weight exceeds 750g! Triggering weight_alert...");
       alertTriggered = true;
       if (millis() - lastWeightAlertTime > alertCooldown) {
         Blynk.logEvent("weight_alert", "Trash bin is getting heavy!");
         lastWeightAlertTime = millis();
+        delay(500);
       }
     }
   }
 
-  // --- Read ultrasonic distance ---
-  digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TRIG_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
-
-  long duration = pulseIn(ECHO_PIN, HIGH);
-  float distanceCm = duration * 0.0343 / 2.0;
+  // --- Read ultrasonic distance using moving average ---
+  float distanceCm = getStableDistanceCm();
 
   Serial.print("Distance: ");
   Serial.print(distanceCm);
@@ -132,10 +155,12 @@ void readSensorsAndUpdate() {
   Blynk.virtualWrite(V2, binLevel);
 
   if (distanceCm <= 5.0) {
+    Serial.println("Distance is <= 5.0 cm! Triggering full alert...");
     alertTriggered = true;
     if (millis() - lastFullAlertTime > alertCooldown) {
       Blynk.logEvent("alert", "Trash bin is full!");
       lastFullAlertTime = millis();
+      delay(500);
     }
   }
 
@@ -168,7 +193,7 @@ void setup() {
   display.display();
 
   LoadCell.begin(HX711_DOUT, HX711_SCK);
-  LoadCell.set_scale(-424.5575);
+  LoadCell.set_scale(424.5575);
   LoadCell.tare();
 
   pinMode(TRIG_PIN, OUTPUT);
